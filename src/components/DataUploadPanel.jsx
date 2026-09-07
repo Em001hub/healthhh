@@ -273,7 +273,7 @@ export default function DataUploadPanel({
       setTrainingPhase('training');
 
       // 3. Start training (async)
-      await startTraining(jobId, currentHospital, useCase, 'cloud', regulatoryTags);
+      await startTraining(jobId, currentHospital, useCase, 'cloud', regulatoryTags, rawText);
 
       // 4. Poll for progress
       await new Promise((resolve, reject) => {

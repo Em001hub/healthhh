@@ -9,9 +9,10 @@ from typing import Any, Dict, Optional
 _jobs: Dict[str, Dict[str, Any]] = {}
 
 
-def create_job() -> str:
+def create_job(job_id: Optional[str] = None, **kwargs) -> str:
     """Create a new job and return its ID."""
-    job_id = str(uuid.uuid4())[:12]
+    if not job_id:
+        job_id = str(uuid.uuid4())[:12]
     _jobs[job_id] = {
         "status": "created",
         "raw_csv": None,
@@ -21,6 +22,8 @@ def create_job() -> str:
         "train_result": None,
         "model_card": None,
     }
+    if kwargs:
+        _jobs[job_id].update(kwargs)
     return job_id
 
 

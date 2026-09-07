@@ -61,7 +61,7 @@ export async function preprocessDataset(jobId) {
  * @param {string[]} regulatoryTags
  * @returns {Promise<{ status, job_id, model_id }>}
  */
-export async function startTraining(jobId, hospitalInfo, useCase, computeMode = 'cloud', regulatoryTags = []) {
+export async function startTraining(jobId, hospitalInfo, useCase, computeMode = 'cloud', regulatoryTags = [], rawCsv = '') {
   return request('POST', `/train/${jobId}`, {
     body: {
       hospital_id: hospitalInfo.id,
@@ -71,6 +71,7 @@ export async function startTraining(jobId, hospitalInfo, useCase, computeMode = 
       use_case: useCase,
       compute_mode: computeMode,
       regulatory_tags: regulatoryTags,
+      raw_csv: rawCsv || undefined,
     },
   });
 }

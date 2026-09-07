@@ -159,21 +159,39 @@ async def preprocess_dataset(job_id: str):
 @router.post("/train/{job_id}", tags=["Training"])
 async def start_training(job_id: str, body: TrainStartRequest):
     """
-    Kick off model training for the preprocessed job.
-    Training runs in a background thread; poll /train/{job_id}/status for progress.
-    Returns immediately with { "status": "started", "model_id": "..." }.
+    Train model for the preprocessed job synchronously.
+    Returns complete training results, history, and model card immediately.
     """
     job = job_store.get_job(job_id)
-    if not job:
-        raise HTTPException(status_code=404, detail=f"Job {job_id} not found.")
-    if not job.get("quality_report"):
-        raise HTTPException(status_code=400, detail="Dataset not yet preprocessed. Call /preprocess first.")
+    quality_report = job.get("quality_report") if job else None
 
-    quality_report = job["quality_report"]
+    # Stateless fallback for Serverless / Lambda environments if job was not found in-memory
+    if not quality_report:
+        if body.raw_csv:
+            try:
+                quality_report = clean_and_validate_dataset(
+                    raw_csv_text=body.raw_csv,
+                    use_case=body.use_case,
+                    winsorize_outliers=True,
+                    max_missing_rate_drop=0.60,
+                )
+                job_store.create_job(
+                    job_id=job_id,
+                    file_name="uploaded_dataset.csv",
+                    raw_csv=body.raw_csv,
+                    raw_text=body.raw_csv,
+                    use_case=body.use_case,
+                    quality_report=quality_report,
+                )
+            except Exception as e:
+                raise HTTPException(status_code=400, detail=f"Failed to preprocess dataset: {str(e)}")
+        else:
+            raise HTTPException(status_code=404, detail=f"Job {job_id} not found. Please re-upload or provide raw_csv.")
+
     df = quality_report["df"]
     feature_names = quality_report["numeric_feature_names"]
     target_col = quality_report["target_col"]
-    demographic_columns = quality_report["demographic_columns"]
+    demographic_columns = quality_report.get("demographic_columns", [])
 
     if not feature_names:
         raise HTTPException(status_code=422, detail="No numeric feature columns found in dataset.")
@@ -185,76 +203,60 @@ async def start_training(job_id: str, body: TrainStartRequest):
         "pub_key_fingerprint": body.pub_key_fingerprint,
     }
 
-    # Initialize live training status
-    model_id_placeholder = f"mod-{body.use_case}-{str(int(time.time()))[-6:]}"
-    job_store.update_job(job_id, status="running", training_status={
-        "status": "running",
-        "current_epoch": 0,
-        "total_epochs": 20,
-        "history": [],
-        "model_id": model_id_placeholder,
-    })
+    try:
+        train_result = train_model(
+            df=df,
+            feature_names=feature_names,
+            target_col=target_col,
+            use_case=body.use_case,
+            hospital_info=hospital_info,
+            regulatory_tags=body.regulatory_tags or [],
+            compute_mode=body.compute_mode,
+            on_progress=None,
+            demographic_columns=demographic_columns,
+        )
 
-    def _run_training():
-        def on_progress(epoch_rec, history):
-            job_store.update_job(job_id, training_status={
-                "status": "running",
-                "current_epoch": epoch_rec["epoch"],
+        model_card = build_model_card(
+            train_result=train_result,
+            data_quality_report=quality_report,
+            hospital_info=hospital_info,
+            regulatory_tags=body.regulatory_tags or [],
+        )
+
+        # Store model card globally
+        _model_cards[train_result["model_id"]] = model_card
+        _model_cards[job_id] = model_card
+
+        job_store.update_job(job_id,
+            status="complete",
+            train_result=train_result,
+            model_card=model_card,
+            training_status={
+                "status": "complete",
+                "current_epoch": train_result["training_history"][-1]["epoch"] if train_result["training_history"] else 20,
                 "total_epochs": 20,
-                "history": history,
-                "model_id": model_id_placeholder,
-            })
-            time.sleep(0.05)  # tiny delay so polling can catch intermediate states
+                "history": train_result["training_history"],
+                "model_id": train_result["model_id"],
+            },
+        )
 
-        try:
-            train_result = train_model(
-                df=df,
-                feature_names=feature_names,
-                target_col=target_col,
-                use_case=body.use_case,
-                hospital_info=hospital_info,
-                regulatory_tags=body.regulatory_tags or [],
-                compute_mode=body.compute_mode,
-                on_progress=on_progress,
-                demographic_columns=demographic_columns,
-            )
-
-            model_card = build_model_card(
-                train_result=train_result,
-                data_quality_report=quality_report,
-                hospital_info=hospital_info,
-                regulatory_tags=body.regulatory_tags or [],
-            )
-
-            # Store model card globally
-            _model_cards[train_result["model_id"]] = model_card
-
-            job_store.update_job(job_id,
-                status="complete",
-                train_result=train_result,
-                model_card=model_card,
-                training_status={
-                    "status": "complete",
-                    "current_epoch": train_result["training_history"][-1]["epoch"] if train_result["training_history"] else 20,
-                    "total_epochs": 20,
-                    "history": train_result["training_history"],
-                    "model_id": train_result["model_id"],
-                },
-            )
-        except Exception as e:
-            job_store.update_job(job_id, status="failed", training_status={
-                "status": "failed",
-                "current_epoch": 0,
-                "total_epochs": 20,
-                "history": [],
-                "model_id": model_id_placeholder,
-                "error": str(e),
-            })
-
-    thread = threading.Thread(target=_run_training, daemon=True)
-    thread.start()
-
-    return {"status": "started", "job_id": job_id, "model_id": model_id_placeholder}
+        return {
+            "status": "complete",
+            "job_id": job_id,
+            "model_id": train_result["model_id"],
+            "history": train_result["training_history"],
+            "model_card": model_card,
+        }
+    except Exception as e:
+        job_store.update_job(job_id, status="failed", training_status={
+            "status": "failed",
+            "current_epoch": 0,
+            "total_epochs": 20,
+            "history": [],
+            "model_id": None,
+            "error": str(e),
+        })
+        raise HTTPException(status_code=500, detail=f"Training failed: {str(e)}")
 
 
 # ── GET /train/{job_id}/status ──────────────────────────────────────────

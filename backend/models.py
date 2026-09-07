@@ -86,6 +86,7 @@ class TrainStartRequest(BaseModel):
     regulatory_tags: Optional[List[str]] = ["IRB Approved", "HIPAA De-Identified Safe Harbor"]
     use_case: str = "sepsis"
     compute_mode: str = "cloud"   # "cloud" | "edge"
+    raw_csv: Optional[str] = None
 
 
 # ── Model Card ────────────────────────────────────────────────────────────────
