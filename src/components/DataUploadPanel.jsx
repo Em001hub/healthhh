@@ -142,12 +142,18 @@ export default function DataUploadPanel({
 
   useEffect(() => {
     let cancelled = false;
-    async function checkBackend() {
+    async function checkBackend(retries = 2) {
       try {
-        const res = await fetch('/api/health', { signal: AbortSignal.timeout(4000) });
+        const res = await fetch('/api/health', { signal: AbortSignal.timeout(10000) });
         if (!cancelled) setBackendStatus(res.ok ? 'online' : 'offline');
       } catch {
-        if (!cancelled) setBackendStatus('offline');
+        if (!cancelled) {
+          if (retries > 0) {
+            setTimeout(() => checkBackend(retries - 1), 2000);
+          } else {
+            setBackendStatus('offline');
+          }
+        }
       }
     }
     checkBackend();
@@ -663,12 +669,21 @@ export default function DataUploadPanel({
               }`} />
               <span>
                 {backendStatus === 'online' && '☁️ FastAPI Backend Online — Cloud Training available'}
-                {backendStatus === 'offline' && '⚠️ FastAPI Backend Offline — start it with: cd backend && python -m uvicorn main:app --reload --port 8000'}
+                {backendStatus === 'offline' && (
+                  import.meta.env.DEV 
+                    ? '⚠️ FastAPI Backend Offline — start it with: cd backend && python -m uvicorn main:app --reload --port 8000'
+                    : '⚠️ FastAPI Backend Offline or Waking Up — click Retry to reconnect'
+                )}
                 {backendStatus === 'checking' && 'Checking backend connectivity…'}
               </span>
               {backendStatus === 'offline' && (
                 <button
-                  onClick={() => { setBackendStatus('checking'); fetch('/api/health', { signal: AbortSignal.timeout(3000) }).then(r => setBackendStatus(r.ok ? 'online' : 'offline')).catch(() => setBackendStatus('offline')); }}
+                  onClick={() => {
+                    setBackendStatus('checking');
+                    fetch('/api/health', { signal: AbortSignal.timeout(8000) })
+                      .then(r => setBackendStatus(r.ok ? 'online' : 'offline'))
+                      .catch(() => setBackendStatus('offline'));
+                  }}
                   className="ml-auto px-2 py-0.5 rounded bg-rose-500/10 border border-rose-400/20 text-rose-300 hover:text-white text-[10px] transition-colors"
                 >Retry</button>
               )}
